@@ -1,13 +1,19 @@
 package main
-
+//imports
 import(
-	"fmt"
 	"net/http"
 	"log"
 	"sync"
 	"encoding/json"
+	"database/sql"
+	_ "github.com/go-sql-driver/mysql"
+	"strings"
+	"errors"
+	"github.com/joho/godotenv"
+	"os"
 )
 
+//Utility Functions
 func respondWithError(w http.ResponseWriter , code int , msg string){
 	respondWithJSON(w , code , map[string]string{"error":msg})
 }
@@ -22,17 +28,46 @@ func respondWithJSON(w http.ResponseWriter , code int , data interface{}){
 	w.Write(response)
 }
 
-type Blog struct{
-	Title string `json:"title"`
+func slugFromURL(r *http.Request) (string , error){
+	parts := strings.Split(r.URL.String() , "/")
+	if len(parts) != 3{
+		return "~",errors.New("Slug Doesnot Exist")
+	}	
+	slug :=  parts[len(parts)-1]
+	return slug,nil
+}
+
+func connectDB() *sql.DB{
+	DB_STRING,ok := os.LookupEnv("DB_STRING")
+	if !ok{
+		panic("DB details not found")
+	}
+	db, err := sql.Open("mysql", DB_STRING)
+	if err != nil{
+		panic(err)
+	}
+	return db
+}
+//Models
+type Post struct{
+	Id int `json:"id"`
+	Slug string `json:"slug"`
 	Description string `json:"description"`
-	Html string `json:"html"`
-	CreatedAt string `json:"date"`
+	Content string `json:"content"`
+	Date string `json:"date"`
 }
 
 type BlogHandler struct{
 	sync.Mutex
+	db *sql.DB
 }
 
+func newBlogHandler(db *sql.DB) *BlogHandler{
+	return &BlogHandler{
+		db:db,
+	}
+}
+//controllers
 func (bh *BlogHandler) ServeHTTP(w http.ResponseWriter , r *http.Request){
 	switch r.Method{
 		case "GET":
@@ -49,23 +84,83 @@ func (bh *BlogHandler) ServeHTTP(w http.ResponseWriter , r *http.Request){
 }
 
 func (bh *BlogHandler) get(w http.ResponseWriter , r *http.Request){
-	fmt.Fprintf(w,"Hello from get\n");
+	defer bh.Unlock()
+	bh.Lock()
+	slug , err := slugFromURL(r)
+	if err != nil{
+		rows,err := bh.db.Query("SELECT * FROM posts ORDER BY date DESC")
+		if err != nil{
+			respondWithError(w , http.StatusInternalServerError , "Error in Query")
+		} 
+		var data []Post
+		for rows.Next(){
+			var post Post
+			err := rows.Scan(&post.Id , &post.Slug , &post.Description , &post.Content , &post.Date)
+			if err != nil{
+				respondWithError(w , http.StatusInternalServerError , "Error in Query")
+			}
+			data = append(data , post)
+		}
+		respondWithJSON(w , http.StatusOK , data)
+		defer rows.Close()
+		return
+	}else{
+		data,err := bh.getSingle(w , slug)
+		if err != nil{
+			respondWithError(w , http.StatusNotFound , "Requested Resource does not Exist")
+		}else{
+			respondWithJSON(w , http.StatusOK , data)
+		}
+		return
+	}
 }
+
+func (bh *BlogHandler) getSingle (w http.ResponseWriter ,slug string) (interface{} , error){
+	rows,err := bh.db.Query("SELECT * FROM posts WHERE slug=? LIMIT 1" , slug)
+	defer rows.Close()
+	if err != nil{
+		respondWithError(w , http.StatusInternalServerError , "Error in Query")
+	}
+	var l int = 0
+	var post Post
+	for rows.Next(){
+		l += 1
+		err := rows.Scan(&post.Id , &post.Slug , &post.Description , &post.Content , &post.Date)
+		if err != nil{
+			respondWithError(w , http.StatusInternalServerError , "Internal Server Error")
+		}
+	}	
+	if l == 0{
+		return "~",errors.New("Requested Resource doesnot Exist")
+	}else{
+		return post,nil		
+	}	
+}
+
 func (bh *BlogHandler) post(w http.ResponseWriter , r *http.Request){
-	fmt.Fprintf(w,"Hello from post\n");
 }
 func (bh *BlogHandler) put(w http.ResponseWriter , r *http.Request){
-	fmt.Fprintf(w,"Hello from put\n");
 }
 func (bh *BlogHandler) delete(w http.ResponseWriter , r *http.Request){
-	fmt.Fprintf(w, "Hello from delete\n");
 }
 
+func init(){
+	err := godotenv.Load(".env")
+	if err != nil{
+		panic("Error Loading .env Config")
+	}
+}
 
 func main(){
-	port := ":8080"
-	bh := new(BlogHandler)
+	
+	port, ok := os.LookupEnv("PORT")
+	if !ok {
+		panic("Undefined Environment Variables")
+	}
+	db := connectDB()
+	defer db.Close()
+	bh := newBlogHandler(db)
 	http.Handle("/blog" , bh)
 	http.Handle("/blog/" , bh)
-	log.Fatal( http.ListenAndServe(port , nil))
+	log.Fatal(http.ListenAndServe(port , nil))
 }

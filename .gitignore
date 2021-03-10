@@ -1,0 +1,15 @@
+# Project Specific
+.env
+test_data.sql
+
+
+# Binaries, plugins, libs
+*.dll
+*.dylib
+*.exe
+*.exe~
+*.so
+
+# Testing
+*.test
+*.tmp
